@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SENTINEL // Person Detection</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+  :root {
+    --bg: #020b0f;
+    --panel: #040f14;
+    --border: #0f3040;
+    --accent: #00e5ff;
+    --danger: #ff2d2d;
+    --safe: #00ff88;
+    --warn: #ffaa00;
+    --text: #7ecfdf;
+    --dim: #1a4050;
+    --glow: 0 0 12px #00e5ff66;
+    --glow-danger: 0 0 20px #ff2d2d88;
+    --glow-safe: 0 0 12px #00ff8866;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.12) 2px,rgba(0,0,0,0.12) 4px);
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: rgba(0,229,255,0.015);
+    animation: flicker 8s infinite;
+    pointer-events: none;
+    z-index: 998;
+  }
+
+  @keyframes flicker { 0%,95%,100%{opacity:1} 96%{opacity:0.85} 97%{opacity:1} 98%{opacity:0.9} }
+
+  header {
+    width: 100%;
+    max-width: 900px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 14px;
+    margin-bottom: 24px;
+  }
+
+  .logo {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 1.4rem;
+    letter-spacing: 0.2em;
+    color: var(--accent);
+    text-shadow: var(--glow);
+  }
+  .logo span { color: var(--dim); font-weight: 400; font-size: 0.7rem; display: block; letter-spacing: 0.3em; margin-top: 2px; }
+
+  .status-bar { display: flex; gap: 20px; align-items: center; font-size: 0.7rem; letter-spacing: 0.1em; color: var(--dim); }
+
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); display: inline-block; margin-right: 6px; transition: all 0.3s; }
+  .status-dot.active { background: var(--safe); box-shadow: var(--glow-safe); animation: pulse 1.5s infinite; }
+  .status-dot.alert { background: var(--danger); box-shadow: var(--glow-danger); animation: pulse-fast 0.5s infinite; }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  @keyframes pulse-fast { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  main { width: 100%; max-width: 900px; display: grid; grid-template-columns: 1fr 280px; gap: 16px; }
+
+  .camera-wrap {
+    position: relative;
+    background: #000;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    aspect-ratio: 4/3;
+  }
+  .camera-wrap.detected {
+    border-color: var(--danger);
+    box-shadow: var(--glow-danger), inset 0 0 40px rgba(255,45,45,0.05);
+    animation: border-pulse 0.5s infinite;
+  }
+  @keyframes border-pulse { 0%,100%{border-color:var(--danger)} 50%{border-color:#ff000044} }
+
+  .corner { position: absolute; width: 20px; height: 20px; border-color: var(--accent); border-style: solid; opacity: 0.6; z-index: 10; }
+  .corner.tl { top:10px; left:10px; border-width: 2px 0 0 2px; }
+  .corner.tr { top:10px; right:10px; border-width: 2px 2px 0 0; }
+  .corner.bl { bottom:10px; left:10px; border-width: 0 0 2px 2px; }
+  .corner.br { bottom:10px; right:10px; border-width: 0 2px 2px 0; }
+
+  video { width:100%; height:100%; object-fit:cover; display:block; transform:scaleX(-1); }
+
+  canvas { position:absolute; top:0; left:0; width:100%; height:100%; transform:scaleX(-1); }
+
+  .overlay-label {
+    position: absolute;
+    top: 12px; left: 50%;
+    transform: translateX(-50%);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    letter-spacing: 0.2em;
+    color: var(--accent);
+    text-shadow: var(--glow);
+    opacity: 0.7;
+    z-index: 10;
+    white-space: nowrap;
+  }
+
+  .detection-flash { position:absolute; inset:0; background:rgba(255,45,45,0.08); opacity:0; pointer-events:none; z-index:5; transition:opacity 0.1s; }
+  .detection-flash.show { opacity:1; }
+
+  .sidebar { display:flex; flex-direction:column; gap:14px; }
+
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:14px; }
+
+  .panel-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.55rem;
+    letter-spacing: 0.25em;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .threat-level { font-family:'Orbitron',sans-serif; font-size:1.6rem; font-weight:900; text-align:center; padding:10px 0; transition:all 0.3s; letter-spacing:0.05em; }
+  .threat-level.clear { color:var(--safe); text-shadow:var(--glow-safe); }
+  .threat-level.alert { color:var(--danger); text-shadow:var(--glow-danger); }
+  .threat-level.loading { color:var(--warn); }
+
+  .sub-status { text-align:center; font-size:0.65rem; color:var(--dim); letter-spacing:0.1em; margin-top:4px; }
+
+  .stat-row { display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:0.7rem; border-bottom:1px solid #0a1f28; }
+  .stat-row:last-child { border-bottom:none; }
+  .stat-label { color:var(--dim); letter-spacing:0.08em; }
+  .stat-value { color:var(--accent); font-weight:bold; }
+  .stat-value.danger { color:var(--danger); }
+  .stat-value.safe { color:var(--safe); }
+
+  .btn { width:100%; padding:10px; background:transparent; border:1px solid var(--border); border-radius:3px; color:var(--text); font-family:'Share Tech Mono',monospace; font-size:0.7rem; letter-spacing:0.15em; cursor:pointer; text-transform:uppercase; transition:all 0.2s; margin-bottom:8px; }
+  .btn:last-child { margin-bottom:0; }
+  .btn:hover { border-color:var(--accent); color:var(--accent); box-shadow:var(--glow); }
+  .btn.active { border-color:var(--safe); color:var(--safe); box-shadow:var(--glow-safe); }
+  .btn:disabled { opacity:0.3; cursor:not-allowed; }
+
+  .log { max-height:160px; overflow-y:auto; font-size:0.62rem; color:var(--dim); line-height:1.8; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+  .log-entry { padding:2px 0; }
+  .log-entry.alert { color:var(--danger); }
+  .log-entry.clear { color:var(--safe); }
+  .log-entry.info { color:var(--warn); }
+
+  .conf-bar-wrap { margin-top:8px; }
+  .conf-label { display:flex; justify-content:space-between; font-size:0.62rem; color:var(--dim); margin-bottom:4px; }
+  .conf-bar { height:3px; background:var(--border); border-radius:2px; overflow:hidden; }
+  .conf-fill { height:100%; background:var(--accent); transition:width 0.3s; box-shadow:var(--glow); }
+
+  .loading-overlay { position:absolute; inset:0; background:rgba(2,11,15,0.9); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:20; gap:12px; }
+  .spinner { width:40px; height:40px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .load-text { font-size:0.65rem; color:var(--accent); letter-spacing:0.2em; animation:blink 1s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .cooldown-wrap { margin-top:8px; }
+  .cooldown-bar { height:3px; background:var(--border); border-radius:2px; overflow:hidden; }
+  .cooldown-fill { height:100%; background:var(--warn); width:0%; transition:width 0.1s linear; }
+
+  select.ctrl-select {
+    width:100%;
+    background:#040f14;
+    border:1px solid #0f3040;
+    color:#7ecfdf;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.68rem;
+    padding:7px 8px;
+    margin-bottom:10px;
+    border-radius:3px;
+    cursor:pointer;
+    outline:none;
+  }
+
+  footer { margin-top:20px; font-size:0.55rem; color:var(--dim); letter-spacing:0.15em; opacity:0.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    SENTINEL
+    <span>// PERSON DETECTION + POSE TRACKING v3.0</span>
+  </div>
+  <div class="status-bar">
+    <div><span class="status-dot" id="modelDot"></span><span id="modelStatus">OFFLINE</span></div>
+    <div><span class="status-dot" id="poseDot"></span><span id="poseStatus">POSE OFF</span></div>
+    <div><span class="status-dot" id="camDot"></span><span id="camStatus">NO FEED</span></div>
+  </div>
+</header>
+
+<main>
+  <div class="camera-wrap" id="cameraWrap">
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+    <div class="overlay-label">LIVE FEED // COCO-SSD + MOVENET POSE</div>
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="canvas"></canvas>
+    <div class="detection-flash" id="flash"></div>
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="spinner"></div>
+      <div class="load-text" id="loadText">INITIALIZING...</div>
+    </div>
+  </div>
+
+  <div class="sidebar">
+
+    <div class="panel">
+      <div class="panel-title">// THREAT STATUS</div>
+      <div class="threat-level loading" id="threatLevel">LOADING</div>
+      <div class="sub-status" id="subStatus">Initializing models...</div>
+      <div class="conf-bar-wrap">
+        <div class="conf-label"><span>CONFIDENCE</span><span id="confPct">0%</span></div>
+        <div class="conf-bar"><div class="conf-fill" id="confFill" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">// STATISTICS</div>
+      <div class="stat-row"><span class="stat-label">DETECTIONS</span><span class="stat-value" id="statDetections">0</span></div>
+      <div class="stat-row"><span class="stat-label">PERSONS IN FRAME</span><span class="stat-value" id="statPersons">0</span></div>
+      <div class="stat-row"><span class="stat-label">JOINTS TRACKED</span><span class="stat-value" id="statJoints">0</span></div>
+      <div class="stat-row"><span class="stat-label">ALERTS FIRED</span><span class="stat-value danger" id="statAlerts">0</span></div>
+      <div class="stat-row"><span class="stat-label">UPTIME</span><span class="stat-value safe" id="statUptime">00:00</span></div>
+      <div class="stat-row"><span class="stat-label">FPS</span><span class="stat-value" id="statFps">--</span></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">// CONTROLS</div>
+      <div class="conf-label" style="margin-bottom:6px;"><span>📷 CAMERA SOURCE</span></div>
+      <select id="cameraSelect" class="ctrl-select" onchange="switchCamera()">
+        <option value="">-- SELECT CAMERA --</option>
+      </select>
+      <button class="btn active" id="btnVoice" onclick="toggleVoice()">🔊 VOICE ALERT: ON</button>
+      <button class="btn active" id="btnSkeleton" onclick="toggleSkeleton()">🦴 SKELETON: ON</button>
+      <button class="btn active" id="btnBoxes" onclick="toggleBoxes()">◻ SHOW BOXES: ON</button>
+      <button class="btn" id="btnMirror" onclick="toggleMirror()">⟺ MIRROR: ON</button>
+      <div class="cooldown-wrap">
+        <div class="conf-label">
+          <span>ALERT COOLDOWN</span>
+          <select id="cooldownSelect" style="background:#040f14;border:1px solid #0f3040;color:#7ecfdf;font-family:inherit;font-size:0.62rem;padding:1px 4px;">
+            <option value="3000">3s</option>
+            <option value="5000" selected>5s</option>
+            <option value="10000">10s</option>
+            <option value="30000">30s</option>
+          </select>
+        </div>
+        <div class="cooldown-bar"><div class="cooldown-fill" id="cooldownFill"></div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">// EVENT LOG</div>
+      <div class="log" id="log">
+        <div class="log-entry info">[BOOT] System starting...</div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<footer>SENTINEL // COCO-SSD DETECTION + MOVENET LIGHTNING POSE // LOCAL PROCESSING ONLY</footer>
+
+<script>
+  // ── State ──────────────────────────────────────────────
+  let detectorModel = null;
+  let poseModel = null;
+  let stream = null;
+  let detecting = false;
+  let voiceEnabled = true;
+  let showBoxes = true;
+  let showSkeleton = true;
+  let mirrorOn = true;
+  let lastAlert = 0;
+  let detectionCount = 0;
+  let alertCount = 0;
+  let startTime = Date.now();
+  let frameCount = 0;
+  let lastFpsTime = Date.now();
+
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+
+  // MoveNet keypoint indices (17 points)
+  const KP = {
+    NOSE:0, LEFT_EYE:1, RIGHT_EYE:2, LEFT_EAR:3, RIGHT_EAR:4,
+    LEFT_SHOULDER:5, RIGHT_SHOULDER:6,
+    LEFT_ELBOW:7, RIGHT_ELBOW:8,
+    LEFT_WRIST:9, RIGHT_WRIST:10,
+    LEFT_HIP:11, RIGHT_HIP:12,
+    LEFT_KNEE:13, RIGHT_KNEE:14,
+    LEFT_ANKLE:15, RIGHT_ANKLE:16
+  };
+
+  // Skeleton connections: [from, to, color]
+  const SKELETON = [
+    // Head
+    [KP.LEFT_EAR,    KP.LEFT_EYE,       '#00e5ff'],
+    [KP.RIGHT_EAR,   KP.RIGHT_EYE,      '#00e5ff'],
+    [KP.LEFT_EYE,    KP.NOSE,           '#00e5ff'],
+    [KP.RIGHT_EYE,   KP.NOSE,           '#00e5ff'],
+    // Shoulders
+    [KP.LEFT_SHOULDER,  KP.RIGHT_SHOULDER, '#00ff88'],
+    // Arms
+    [KP.LEFT_SHOULDER,  KP.LEFT_ELBOW,     '#ffaa00'],
+    [KP.LEFT_ELBOW,     KP.LEFT_WRIST,     '#ffaa00'],
+    [KP.RIGHT_SHOULDER, KP.RIGHT_ELBOW,    '#ff6b35'],
+    [KP.RIGHT_ELBOW,    KP.RIGHT_WRIST,    '#ff6b35'],
+    // Torso
+    [KP.LEFT_SHOULDER,  KP.LEFT_HIP,       '#00ff88'],
+    [KP.RIGHT_SHOULDER, KP.RIGHT_HIP,      '#00ff88'],
+    [KP.LEFT_HIP,       KP.RIGHT_HIP,      '#00ff88'],
+    // Legs
+    [KP.LEFT_HIP,    KP.LEFT_KNEE,      '#c084fc'],
+    [KP.LEFT_KNEE,   KP.LEFT_ANKLE,     '#c084fc'],
+    [KP.RIGHT_HIP,   KP.RIGHT_KNEE,     '#fb7185'],
+    [KP.RIGHT_KNEE,  KP.RIGHT_ANKLE,    '#fb7185'],
+  ];
+
+  // Joint dot colors by body region
+  const JOINT_COLORS = [
+    '#00e5ff','#00e5ff','#00e5ff','#00e5ff','#00e5ff', // face
+    '#00ff88','#00ff88',                               // shoulders
+    '#ffaa00','#ff6b35',                               // elbows
+    '#ffaa00','#ff6b35',                               // wrists
+    '#00ff88','#00ff88',                               // hips
+    '#c084fc','#fb7185',                               // knees
+    '#c084fc','#fb7185',                               // ankles
+  ];
+
+  // ── Uptime ─────────────────────────────────────────────
+  setInterval(() => {
+    if (!detecting) return;
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+    const s = String(elapsed % 60).padStart(2, '0');
+    document.getElementById('statUptime').textContent = `${m}:${s}`;
+  }, 1000);
+
+  function trackFps() {
+    frameCount++;
+    const now = Date.now();
+    if (now - lastFpsTime >= 1000) {
+      document.getElementById('statFps').textContent = frameCount;
+      frameCount = 0;
+      lastFpsTime = now;
+    }
+  }
+
+  function addLog(msg, type = '') {
+    const logEl = document.getElementById('log');
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
+    entry.textContent = `[${ts}] ${msg}`;
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
+    while (logEl.children.length > 50) logEl.removeChild(logEl.firstChild);
+  }
+
+  function setStatus(dot, label, state) {
+    const dotEl = document.getElementById(dot);
+    const labelEl = document.getElementById(label);
+    dotEl.className = `status-dot ${state === 'active' ? 'active' : state === 'alert' ? 'alert' : ''}`;
+    const labels = {
+      modelStatus: { active:'MODEL READY', alert:'MODEL ERR', '':'OFFLINE' },
+      poseStatus:  { active:'POSE READY',  alert:'POSE ERR',  '':'POSE OFF' },
+      camStatus:   { active:'LIVE',         alert:'CAM ERR',   '':'NO FEED' },
+    };
+    if (labels[label]) labelEl.textContent = labels[label][state] || '';
+  }
+
+  // ── Draw skeleton ──────────────────────────────────────
+  function drawPose(keypoints) {
+    const W = canvas.width;
+    const CONF = 0.3;
+
+    // Draw bones
+    for (const [a, b, color] of SKELETON) {
+      const kpA = keypoints[a];
+      const kpB = keypoints[b];
+      if (!kpA || !kpB) continue;
+      if (kpA.score < CONF || kpB.score < CONF) continue;
+
+      // Mirror X for canvas (canvas itself is CSS-mirrored, so coords are flipped)
+      const ax = W - kpA.x;
+      const bx = W - kpB.x;
+
+      ctx.beginPath();
+      ctx.moveTo(ax, kpA.y);
+      ctx.lineTo(bx, kpB.y);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 6;
+      ctx.globalAlpha = Math.min(kpA.score, kpB.score) * 1.5;
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+
+    // Draw joint dots
+    let jointCount = 0;
+    keypoints.forEach((kp, i) => {
+      if (!kp || kp.score < CONF) return;
+      jointCount++;
+      const x = W - kp.x;
+      const color = JOINT_COLORS[i] || '#00e5ff';
+
+      ctx.beginPath();
+      ctx.arc(x, kp.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(x, kp.y, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff';
+      ctx.shadowBlur = 0;
+      ctx.fill();
+    });
+
+    return jointCount;
+  }
+
+  // ── Detection loop ─────────────────────────────────────
+  async function detect() {
+    if (!detecting || !detectorModel) return;
+
+    // Run COCO-SSD
+    const predictions = await detectorModel.detect(video);
+    trackFps();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const persons = predictions.filter(p => p.class === 'person' && p.score > 0.45);
+    document.getElementById('statPersons').textContent = persons.length;
+
+    let totalJoints = 0;
+
+    // Run MoveNet pose on all detected persons
+    if (poseModel && showSkeleton && persons.length > 0) {
+      try {
+        const poses = await poseModel.estimatePoses(video);
+        for (const pose of poses) {
+          if (pose.score > 0.2) {
+            totalJoints += drawPose(pose.keypoints);
+          }
+        }
+      } catch(e) { /* pose estimate failure is non-fatal */ }
+    }
+
+    document.getElementById('statJoints').textContent = totalJoints;
+
+    if (persons.length > 0) {
+      detectionCount++;
+      document.getElementById('statDetections').textContent = detectionCount;
+
+      const best = persons.reduce((a, b) => a.score > b.score ? a : b);
+      const conf = Math.round(best.score * 100);
+      document.getElementById('confFill').style.width = conf + '%';
+      document.getElementById('confPct').textContent = conf + '%';
+
+      // Draw bounding boxes
+      if (showBoxes) {
+        persons.forEach(p => {
+          const [x, y, w, h] = p.bbox;
+          const sx = canvas.width - x - w;
+
+          ctx.strokeStyle = '#ff2d2d';
+          ctx.lineWidth = 2;
+          ctx.shadowColor = '#ff2d2d';
+          ctx.shadowBlur = 8;
+          ctx.strokeRect(sx, y, w, h);
+
+          // Corner brackets
+          const cs = 14;
+          ctx.lineWidth = 3;
+          [[sx,y],[sx+w-cs,y],[sx,y+h-cs],[sx+w-cs,y+h-cs]].forEach(([cx,cy],i) => {
+            ctx.beginPath();
+            const dx = i%2===0?cs:-cs;
+            const dy = i<2?cs:-cs;
+            ctx.moveTo(cx+dx, cy);
+            ctx.lineTo(cx, cy);
+            ctx.lineTo(cx, cy+dy);
+            ctx.stroke();
+          });
+
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = 'rgba(255,45,45,0.85)';
+          ctx.fillRect(sx, y - 20, 120, 20);
+          ctx.fillStyle = '#fff';
+          ctx.font = '11px Share Tech Mono';
+          ctx.fillText(`PERSON ${Math.round(p.score*100)}%`, sx + 5, y - 5);
+        });
+      }
+
+      // UI update
+      document.getElementById('threatLevel').textContent = 'DETECTED';
+      document.getElementById('threatLevel').className = 'threat-level alert';
+      document.getElementById('subStatus').textContent = `${persons.length} person${persons.length > 1 ? 's' : ''} in frame`;
+      document.getElementById('cameraWrap').classList.add('detected');
+
+      const flash = document.getElementById('flash');
+      flash.classList.add('show');
+      setTimeout(() => flash.classList.remove('show'), 100);
+
+      // Voice alert
+      const cooldown = parseInt(document.getElementById('cooldownSelect').value);
+      const now = Date.now();
+      if (voiceEnabled && now - lastAlert > cooldown) {
+        lastAlert = now;
+        alertCount++;
+        document.getElementById('statAlerts').textContent = alertCount;
+        speak(persons.length > 1 ? `${persons.length} persons detected` : 'Person detected');
+        addLog(`ALERT: ${persons.length} person${persons.length > 1 ? 's' : ''} detected (${conf}% conf)`, 'alert');
+        animateCooldown(cooldown);
+      }
+
+    } else {
+      document.getElementById('threatLevel').textContent = 'CLEAR';
+      document.getElementById('threatLevel').className = 'threat-level clear';
+      document.getElementById('subStatus').textContent = 'No persons detected';
+      document.getElementById('cameraWrap').classList.remove('detected');
+      document.getElementById('confFill').style.width = '0%';
+      document.getElementById('confPct').textContent = '0%';
+    }
+
+    requestAnimationFrame(detect);
+  }
+
+  // ── Camera ─────────────────────────────────────────────
+  async function populateCameras() {
+    try {
+      const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+      tmp.getTracks().forEach(t => t.stop());
+    } catch (e) {}
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cameras = devices.filter(d => d.kind === 'videoinput');
+    const sel = document.getElementById('cameraSelect');
+    sel.innerHTML = '';
+
+    cameras.forEach((cam, i) => {
+      const opt = document.createElement('option');
+      opt.value = cam.deviceId;
+      opt.textContent = cam.label || `Camera ${i + 1}`;
+      sel.appendChild(opt);
+    });
+
+    addLog(`Found ${cameras.length} camera(s)`, 'info');
+    return cameras.length > 0 ? cameras[0].deviceId : null;
+  }
+
+  async function startCamera(deviceId) {
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    detecting = false;
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: deviceId ? { exact: deviceId } : undefined, width: { ideal: 640 }, height: { ideal: 480 } }
+      });
+      video.srcObject = stream;
+      setStatus('camDot', 'camStatus', 'active');
+      const label = document.getElementById('cameraSelect').selectedOptions[0]?.text || 'Camera';
+      addLog(`Camera: ${label}`, 'clear');
+    } catch (e) {
+      addLog('Camera error: ' + e.message, 'alert');
+      document.getElementById('loadingOverlay').style.display = 'flex';
+      document.getElementById('loadText').textContent = 'CAMERA ERROR';
+      return;
+    }
+
+    return new Promise(resolve => {
+      video.onloadeddata = () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        document.getElementById('loadingOverlay').style.display = 'none';
+        document.getElementById('threatLevel').textContent = 'CLEAR';
+        document.getElementById('threatLevel').className = 'threat-level clear';
+        document.getElementById('subStatus').textContent = 'Monitoring...';
+        detecting = true;
+        startTime = Date.now();
+        resolve();
+      };
+    });
+  }
+
+  async function switchCamera() {
+    const deviceId = document.getElementById('cameraSelect').value;
+    if (!deviceId || !detectorModel) return;
+    document.getElementById('loadingOverlay').style.display = 'flex';
+    document.getElementById('loadText').textContent = 'SWITCHING CAMERA...';
+    await startCamera(deviceId);
+    detect();
+  }
+
+  // ── Init ───────────────────────────────────────────────
+  async function init() {
+    // Load COCO-SSD
+    addLog('Loading COCO-SSD...', 'info');
+    document.getElementById('loadText').textContent = 'LOADING DETECTOR...';
+    try {
+      detectorModel = await cocoSsd.load();
+      setStatus('modelDot', 'modelStatus', 'active');
+      addLog('COCO-SSD ready', 'clear');
+    } catch (e) {
+      addLog('COCO-SSD failed: ' + e.message, 'alert');
+      setStatus('modelDot', 'modelStatus', 'alert');
+      document.getElementById('threatLevel').textContent = 'ERROR';
+      document.getElementById('threatLevel').className = 'threat-level alert';
+      return;
+    }
+
+    // Load MoveNet Lightning (fast, good enough for real-time)
+    addLog('Loading MoveNet pose model...', 'info');
+    document.getElementById('loadText').textContent = 'LOADING POSE MODEL...';
+    try {
+      poseModel = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+      );
+      setStatus('poseDot', 'poseStatus', 'active');
+      addLog('MoveNet pose model ready', 'clear');
+    } catch (e) {
+      addLog('Pose model failed (skeleton disabled): ' + e.message, 'info');
+      setStatus('poseDot', 'poseStatus', '');
+      showSkeleton = false;
+      document.getElementById('btnSkeleton').textContent = '🦴 SKELETON: OFF';
+      document.getElementById('btnSkeleton').className = 'btn';
+    }
+
+    document.getElementById('loadText').textContent = 'SCANNING CAMERAS...';
+    const firstDeviceId = await populateCameras();
+
+    document.getElementById('loadText').textContent = 'STARTING CAMERA...';
+    await startCamera(firstDeviceId);
+    detect();
+
+    navigator.mediaDevices.addEventListener('devicechange', async () => {
+      addLog('Device change — refreshing camera list', 'info');
+      const currentId = document.getElementById('cameraSelect').value;
+      await populateCameras();
+      const sel = document.getElementById('cameraSelect');
+      if ([...sel.options].some(o => o.value === currentId)) sel.value = currentId;
+    });
+  }
+
+  // ── Controls ───────────────────────────────────────────
+  function speak(text) {
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.9; utter.pitch = 0.8; utter.volume = 1;
+    const voices = speechSynthesis.getVoices();
+    const pref = voices.find(v => /google|microsoft/i.test(v.name) && /en/i.test(v.lang));
+    if (pref) utter.voice = pref;
+    speechSynthesis.speak(utter);
+  }
+
+  function animateCooldown(duration) {
+    const fill = document.getElementById('cooldownFill');
+    fill.style.transition = 'none';
+    fill.style.width = '100%';
+    setTimeout(() => { fill.style.transition = `width ${duration}ms linear`; fill.style.width = '0%'; }, 50);
+  }
+
+  function toggleVoice() {
+    voiceEnabled = !voiceEnabled;
+    const btn = document.getElementById('btnVoice');
+    btn.textContent = voiceEnabled ? '🔊 VOICE ALERT: ON' : '🔇 VOICE ALERT: OFF';
+    btn.className = voiceEnabled ? 'btn active' : 'btn';
+    addLog(`Voice alerts ${voiceEnabled ? 'enabled' : 'disabled'}`, 'info');
+  }
+
+  function toggleSkeleton() {
+    showSkeleton = !showSkeleton;
+    const btn = document.getElementById('btnSkeleton');
+    btn.textContent = `🦴 SKELETON: ${showSkeleton ? 'ON' : 'OFF'}`;
+    btn.className = showSkeleton ? 'btn active' : 'btn';
+    addLog(`Skeleton overlay ${showSkeleton ? 'enabled' : 'disabled'}`, 'info');
+  }
+
+  function toggleBoxes() {
+    showBoxes = !showBoxes;
+    const btn = document.getElementById('btnBoxes');
+    btn.textContent = `◻ SHOW BOXES: ${showBoxes ? 'ON' : 'OFF'}`;
+    btn.className = showBoxes ? 'btn active' : 'btn';
+  }
+
+  function toggleMirror() {
+    mirrorOn = !mirrorOn;
+    const btn = document.getElementById('btnMirror');
+    btn.textContent = `⟺ MIRROR: ${mirrorOn ? 'ON' : 'OFF'}`;
+    video.style.transform = mirrorOn ? 'scaleX(-1)' : 'none';
+    canvas.style.transform = mirrorOn ? 'scaleX(-1)' : 'none';
+  }
+
+  speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+  init();
+</script>
+</body>
+</html>
